@@ -455,3 +455,6 @@ Thumbs.db
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Audios locales
+recordings/

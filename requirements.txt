@@ -2,3 +2,8 @@ streamlit>=1.33
 pandas>=2.0
 gspread>=6.0.0
 google-auth>=2.29.0
+streamlit-mic-recorder>=0.0.10
+soundfile>=0.12.1
+numpy>=1.26
+# Opcional (solo si quieres transcribir dentro de Streamlit):
+faster-whisper>=1.0
