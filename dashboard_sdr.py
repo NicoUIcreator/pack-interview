@@ -1,15 +1,32 @@
 # dashboard_sdr.py
-import streamlit as st
+import io
+import os
+import json
 import random
 import time
-import pandas as pd
 from datetime import datetime
-import os, io
+
 import numpy as np
+import pandas as pd
 import soundfile as sf
-from streamlit_mic_recorder import mic_recorder
+import streamlit as st
 
 st.set_page_config(page_title="SDR Training - Pack", layout="wide")
+
+# =======================
+# DETECCIÓN DE GRABADOR (compat 0.0.8 + fallback)
+# =======================
+RECORDER = None
+try:
+    # Para streamlit-mic-recorder==0.0.8 la API usa as_wav=True
+    from streamlit_mic_recorder import mic_recorder
+    RECORDER = "mic"
+except Exception:
+    try:
+        from audio_recorder_streamlit import audio_recorder
+        RECORDER = "audio"
+    except Exception:
+        RECORDER = None
 
 # =======================
 # DATA BASE
@@ -34,42 +51,42 @@ OBJECTIONS_BASE = {
     "⏱️ Poco tiempo": [
         "Ahora no puedo, estoy entrando a una reunión.",
         "Dime rápido, ¿qué necesitas?",
-        "No tengo tiempo para esto."
+        "No tengo tiempo para esto.",
     ],
     "❓ Preguntas específicas": [
         "¿Cómo integran con nuestro calendario y herramientas?",
         "¿Cómo medís el impacto y el ROI?",
-        "¿Tenéis casos en mi sector?"
+        "¿Tenéis casos en mi sector?",
     ],
     "💸 Precio/Presupuesto": [
         "No tenemos presupuesto ahora mismo.",
         "Es caro para nosotros.",
-        "En este Q no podemos invertir."
+        "En este Q no podemos invertir.",
     ],
     "🏗️ Ya tenemos proveedor/programa": [
         "Ya tenemos un programa interno de mentoring.",
         "Trabajamos con otro proveedor.",
-        "Esto lo maneja nuestra L&D internamente."
+        "Esto lo maneja nuestra L&D internamente.",
     ],
     "🧭 Prioridad/Timing": [
         "No es una prioridad este trimestre.",
         "Vuelve a llamarme en 6 meses.",
-        "Estamos en reorg; no es el momento."
+        "Estamos en reorg; no es el momento.",
     ],
     "👤 No soy la persona": [
         "No soy yo quien decide esto.",
         "Esto lo lleva otra área.",
-        "No gestiono este presupuesto."
+        "No gestiono este presupuesto.",
     ],
     "📨 Mándame info": [
         "Mándame un correo y lo reviso.",
         "Envíame un PDF con precios y lo vemos.",
-        "Déjame la info y si me interesa te llamo."
+        "Déjame la info y si me interesa te llamo.",
     ],
     "🙅 No interesado": [
         "No me interesa.",
         "No vemos utilidad.",
-        "Esto no nos aplica."
+        "Esto no nos aplica.",
     ],
 }
 
@@ -77,28 +94,26 @@ OBJECTIONS_BY_INDUSTRY = {
     "General": OBJECTIONS_BASE,
     "Telco": {
         **OBJECTIONS_BASE,
-        "❓ Preguntas específicas": OBJECTIONS_BASE["❓ Preguntas específicas"] + [
+        "❓ Preguntas específicas": OBJECTIONS_BASE["❓ Preguntas específicas"]
+        + [
             "¿Se integra con nuestras plataformas de atención y ticketing?",
             "¿Podemos mapear habilidades para equipos de field/ops?",
         ],
     },
     "Retail": {
         **OBJECTIONS_BASE,
-        "🧭 Prioridad/Timing": OBJECTIONS_BASE["🧭 Prioridad/Timing"] + [
-            "Estamos en peak season, no podemos distraer al equipo ahora.",
-        ],
+        "🧭 Prioridad/Timing": OBJECTIONS_BASE["🧭 Prioridad/Timing"]
+        + ["Estamos en peak season, no podemos distraer al equipo ahora."],
     },
     "FinServ": {
         **OBJECTIONS_BASE,
-        "🏗️ Ya tenemos proveedor/programa": OBJECTIONS_BASE["🏗️ Ya tenemos proveedor/programa"] + [
-            "Cumplimos estrictamente con compliance, ¿cómo garantizáis GDPR/ISO?",
-        ],
+        "🏗️ Ya tenemos proveedor/programa": OBJECTIONS_BASE["🏗️ Ya tenemos proveedor/programa"]
+        + ["Cumplimos estrictamente con compliance, ¿cómo garantizáis GDPR/ISO?"],
     },
     "IT": {
         **OBJECTIONS_BASE,
-        "❓ Preguntas específicas": OBJECTIONS_BASE["❓ Preguntas específicas"] + [
-            "¿Tenéis APIs o SSO? ¿Cómo es el provisioning?",
-        ],
+        "❓ Preguntas específicas": OBJECTIONS_BASE["❓ Preguntas específicas"]
+        + ["¿Tenéis APIs o SSO? ¿Cómo es el provisioning?"],
     },
 }
 
@@ -125,7 +140,7 @@ CTA_SNIPPETS = [
     "¿Te va una **discovery** de 20 minutos esta semana?",
     "¿Cuál es el **mejor correo** para enviarte la invitación?",
     "¿Prefieres **martes 10:30** o **jueves 11:30**?",
-    "Te envío el **calendario con 2 slots** y lo ajustamos."
+    "Te envío el **calendario con 2 slots** y lo ajustamos.",
 ]
 
 PERSONA_SCRIPTS = {
@@ -154,12 +169,15 @@ PERSONA_SCRIPTS = {
 def load_history_from_csv(path: str) -> pd.DataFrame:
     try:
         df = pd.read_csv(path)
-        expected = {"timestamp","industry","persona_role","situation","objection","response","score"}
+        expected = {"timestamp", "industry", "persona_role", "situation", "objection", "response", "score"}
         for m in expected - set(df.columns):
             df[m] = ""
         return df
     except Exception:
-        return pd.DataFrame(columns=["timestamp","industry","persona_role","situation","objection","response","score"])
+        return pd.DataFrame(
+            columns=["timestamp", "industry", "persona_role", "situation", "objection", "response", "score"]
+        )
+
 
 def save_history_to_csv(df: pd.DataFrame, path: str) -> bool:
     try:
@@ -168,19 +186,21 @@ def save_history_to_csv(df: pd.DataFrame, path: str) -> bool:
     except Exception:
         return False
 
-# Opcional Google Sheets
-import json
+
 def gs_get_credentials_from_secrets():
+    # Opcional Google Sheets (requiere st.secrets configurado)
     sa = st.secrets["gsheets"]["service_account_json"]
     if isinstance(sa, str):
         sa = json.loads(sa)
     return sa, st.secrets["gsheets"]["spreadsheet_id"]
+
 
 def gs_test_connection():
     try:
         sa_dict, spreadsheet_id = gs_get_credentials_from_secrets()
         import gspread
         from google.oauth2.service_account import Credentials
+
         scopes = ["https://www.googleapis.com/auth/spreadsheets"]
         creds = Credentials.from_service_account_info(sa_dict, scopes=scopes)
         gc = gspread.authorize(creds)
@@ -189,16 +209,21 @@ def gs_test_connection():
             ws = sh.worksheet("history")
         except Exception:
             ws = sh.add_worksheet(title="history", rows="1000", cols="20")
-        ws.update("A1:G1", [["timestamp","industry","persona_role","situation","objection","response","score"]])
+        ws.update(
+            "A1:G1",
+            [["timestamp", "industry", "persona_role", "situation", "objection", "response", "score"]],
+        )
         return "✅ Conexión OK y worksheet 'history' preparado."
     except Exception as e:
         return f"❌ Error de conexión: {e}"
+
 
 def gs_save_history_df(df: pd.DataFrame) -> str:
     try:
         sa_dict, spreadsheet_id = gs_get_credentials_from_secrets()
         import gspread
         from google.oauth2.service_account import Credentials
+
         scopes = ["https://www.googleapis.com/auth/spreadsheets"]
         creds = Credentials.from_service_account_info(sa_dict, scopes=scopes)
         gc = gspread.authorize(creds)
@@ -243,8 +268,8 @@ menu = st.sidebar.radio(
         "🎙️ Grabador de Voz (beta)",
         "🎧 Audio Check (ligero)",
         "📈 Historial & Persistencia",
-        "📚 Guiones por Persona"
-    ]
+        "📚 Guiones por Persona",
+    ],
 )
 
 # =======================
@@ -252,14 +277,16 @@ menu = st.sidebar.radio(
 # =======================
 if menu == "🎯 Objetivos del Ejercicio":
     st.header("🎯 Objetivo del Ejercicio")
-    st.markdown("""
+    st.markdown(
+        """
 - **Meta principal**: conseguir una *discovery call* (no vender).
 - **Acciones clave**:
   - Mantener la conversación fluida  
   - Manejar objeciones con empatía  
   - **Pedir explícitamente** una reunión  
   - **Solicitar email** para enviar invitación de calendario  
-    """)
+    """
+    )
 
 elif menu == "🧑‍💼 Escenarios de Prospectos":
     st.header("🧑‍💼 Escenarios de Prospects")
@@ -281,11 +308,13 @@ elif menu == "🧑‍💼 Escenarios de Prospectos":
 
 elif menu == "🏢 Company Profile (Pack)":
     st.header("🏢 Perfil de la Empresa – Pack")
-    st.markdown("""
+    st.markdown(
+        """
 **Problema**: ~40% empleados insatisfechos, coste medio de renuncia **~15.000 €**.  
 **Solución**: Plataforma de mentoring/coaching con IA, matching gamificado, +200 mentores, analíticas y reporting.  
 **Valor**: retención, engagement, productividad; data-driven; cumplimiento GDPR/ISO; servidores UE.  
-    """)
+    """
+    )
     st.subheader("💰 Modelos de Precio (Resumen)")
     for k, v in PRICING.items():
         st.write(f"- **{k}**: {v}")
@@ -371,10 +400,12 @@ elif menu == "⚔️ Entrenador de Objeciones":
 
     st.markdown("**🧮 Auto-evaluación (marca si lo hiciste):**")
     cc = st.columns(4)
-    crit = [cc[0].checkbox("Ganaste tiempo"),
-            cc[1].checkbox("Empatizaste/Valor claro"),
-            cc[2].checkbox("Propusiste discovery"),
-            cc[3].checkbox("Pediste email")]
+    crit = [
+        cc[0].checkbox("Ganaste tiempo"),
+        cc[1].checkbox("Empatizaste/Valor claro"),
+        cc[2].checkbox("Propusiste discovery"),
+        cc[3].checkbox("Pediste email"),
+    ]
     score = sum(crit)
 
     persona_role = st.selectbox("Persona (rol)", list(PERSONA_SCRIPTS.keys()), index=1)
@@ -382,15 +413,17 @@ elif menu == "⚔️ Entrenador de Objeciones":
     save_cols = st.columns([1, 1, 2])
     if save_cols[0].button("💾 Guardar intento"):
         if st.session_state.current_obj:
-            st.session_state.history.append({
-                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                "industry": industry,
-                "persona_role": persona_role,
-                "situation": situation,
-                "objection": st.session_state.current_obj,
-                "response": resp.strip(),
-                "score": score
-            })
+            st.session_state.history.append(
+                {
+                    "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    "industry": industry,
+                    "persona_role": persona_role,
+                    "situation": situation,
+                    "objection": st.session_state.current_obj,
+                    "response": resp.strip(),
+                    "score": score,
+                }
+            )
             st.success("Intento guardado ✅")
         else:
             st.error("Genera una objeción antes de guardar.")
@@ -400,44 +433,36 @@ elif menu == "⚔️ Entrenador de Objeciones":
 
 elif menu == "🎤 Simulador de Pitch":
     st.header("🎤 Practica tu Pitch")
-    script = st.text_area("Escribe tu pitch (30–45s):", height=200,
-                          placeholder="Hola [nombre], soy Nicolás de Pack. Sé que tienes poco tiempo, ¿te robo 20–30 segundos...?")
+    script = st.text_area(
+        "Escribe tu pitch (30–45s):",
+        height=200,
+        placeholder="Hola [nombre], soy Nicolás de Pack. Sé que tienes poco tiempo, ¿te robo 20–30 segundos...?",
+    )
     st.subheader("📌 Plantilla sugerida")
-    st.write("""
+    st.write(
+        """
 1) **Inicio (ganar tiempo)**: “¿Te robo 20–30 segundos?”  
 2) **Dolor**: rotación cara (~15k€), managers sin upskilling  
 3) **Valor**: mentoring/coaching con IA, +200 expertos, métricas  
 4) **Cierre**: “¿Agendamos 20 min?”  
 5) **CTA email**: “¿Cuál es el mejor correo?”  
-    """)
+    """
+    )
     if st.button("💾 Guardar Notas"):
         st.success("✅ Notas guardadas (sesión actual).")
 
 elif menu == "🎙️ Grabador de Voz (beta)":
-    # === Grabador con transcripción opcional Faster-Whisper ===
-    import os, io
-    import numpy as np
-    import soundfile as sf
-    from streamlit_mic_recorder import mic_recorder
-
     st.header("🎙️ Grabador de Voz (beta)")
-    st.caption("Pulsa **Start recording** → habla → **Stop**. Guarda el WAV y (opcional) transcribe con Faster-Whisper.")
+    st.caption("Graba tu respuesta (30–90s). Si no hay grabador disponible, sube un audio (WAV/MP3).")
 
     os.makedirs("recordings", exist_ok=True)
 
-    st.write("**Graba tu respuesta (30–90s):**")
-    audio_dict = mic_recorder(
-        start_prompt="Start recording",
-        stop_prompt="Stop",
-        just_once=False,
-        format="wav",
-        key="mic1"
-    )
-
+    latest_wav = None
     meta_col1, meta_col2, meta_col3 = st.columns(3)
     saved_path = st.empty()
 
-    def _save_wav_and_info(wav_bytes: bytes) -> dict:
+    def _save_wav_and_info_from_bytes(wav_bytes: bytes) -> dict:
+        """Guarda bytes en recordings/ como WAV PCM y devuelve info básica."""
         ts = datetime.now().strftime("%Y%m%d-%H%M%S")
         path = f"recordings/rec_{ts}.wav"
         data, sr = sf.read(io.BytesIO(wav_bytes), dtype="float32")
@@ -445,18 +470,55 @@ elif menu == "🎙️ Grabador de Voz (beta)":
         duration_sec = round(len(data) / sr, 2)
         return {"path": path, "samplerate": sr, "duration": duration_sec}
 
-    latest_wav = None
-    if audio_dict and "bytes" in audio_dict and audio_dict["bytes"] is not None:
+    audio_bytes = None
+
+    if RECORDER == "mic":
+        st.write("**Grabador (streamlit-mic-recorder)**")
+        audio_dict = mic_recorder(
+            start_prompt="Start recording",
+            stop_prompt="Stop",
+            just_once=False,
+            as_wav=True,  # clave para 0.0.8
+            key="mic1",
+        )
+        if audio_dict and "bytes" in audio_dict and audio_dict["bytes"]:
+            audio_bytes = audio_dict["bytes"]
+
+    elif RECORDER == "audio":
+        st.write("**Grabador (audio-recorder-streamlit)**")
+        # Este componente devuelve bytes WAV
+        audio_bytes = audio_recorder(pause_threshold=2.0, sample_rate=41_000, key="mic2")
+
+    else:
+        st.info("No se detectó un grabador compatible. Usa el cargador de archivos más abajo.")
+
+    if audio_bytes:
         try:
-            info = _save_wav_and_info(audio_dict["bytes"])
+            info = _save_wav_and_info_from_bytes(audio_bytes)
             latest_wav = info["path"]
             meta_col1.metric("Duración", f"{info['duration']} s")
             meta_col2.metric("Sample rate", f"{info['samplerate']} Hz")
             meta_col3.success("Grabación OK")
             saved_path.markdown(f"💾 Archivo guardado: **`{info['path']}`**")
-            st.audio(audio_dict["bytes"], format="audio/wav")
+            st.audio(audio_bytes, format="audio/wav")
         except Exception as e:
             st.error(f"No se pudo procesar el audio: {e}")
+
+    # Cargador de archivos como respaldo
+    st.markdown("#### 📤 O sube un audio (WAV/MP3/M4A/OGG)")
+    up = st.file_uploader("Archivo de audio", type=["wav", "mp3", "m4a", "ogg"])
+    if up is not None:
+        try:
+            raw = up.read()
+            info = _save_wav_and_info_from_bytes(raw)
+            latest_wav = info["path"]
+            meta_col1.metric("Duración", f"{info['duration']} s")
+            meta_col2.metric("Sample rate", f"{info['samplerate']} Hz")
+            meta_col3.success("Cargado OK")
+            st.audio(raw, format=f"audio/{up.type.split('/')[-1] if up.type else 'wav'}")
+            saved_path.markdown(f"💾 Archivo guardado: **`{info['path']}`**")
+        except Exception as e:
+            st.error(f"No se pudo leer el archivo: {e}")
 
     st.markdown("---")
     st.subheader("📝 Transcript")
@@ -467,6 +529,7 @@ elif menu == "🎙️ Grabador de Voz (beta)":
     col_t1, col_t2 = st.columns([1.2, 2])
     try_transcribe = col_t1.button("🤖 Transcribir (Faster-Whisper)")
     whisper_status = col_t2.empty()
+
 
     st.markdown("### ⏭️ Enviar Transcript a **Audio Check**")
     if st.button("➡️ Enviar a Audio Check"):
@@ -483,8 +546,22 @@ elif menu == "🎧 Audio Check (ligero)":
     transcript = col[1].text_area("Transcript (pega tu texto)", height=180, value=prefill, placeholder="Hola... (tu texto)")
 
     filler_words = [
-        "eh", "ehh", "mmm", "este", "esto", "o sea", "vale", "ok", "tipo",
-        "digamos", "¿vale?", "¿ok?", "em", "eeeh", "nada", "bueno"
+        "eh",
+        "ehh",
+        "mmm",
+        "este",
+        "esto",
+        "o sea",
+        "vale",
+        "ok",
+        "tipo",
+        "digamos",
+        "¿vale?",
+        "¿ok?",
+        "em",
+        "eeeh",
+        "nada",
+        "bueno",
     ]
     pause_markers = ["(pausa)", "[pausa]", "...", "— —"]
 
@@ -508,10 +585,14 @@ elif menu == "🎧 Audio Check (ligero)":
             st.write(pd.DataFrame([filler_counts]).T.rename(columns={0: "conteo"}))
 
         tips = []
-        if wpm < 110: tips.append("Ritmo bajo: sube a ~130–160 WPM.")
-        if wpm > 170: tips.append("Ritmo alto: baja a ~130–160 WPM.")
-        if total_fillers >= 5: tips.append("Reduce muletillas (practica silencios breves).")
-        if pauses_per_min > 6: tips.append("Demasiadas pausas: estructura mejor tus frases.")
+        if wpm < 110:
+            tips.append("Ritmo bajo: sube a ~130–160 WPM.")
+        if wpm > 170:
+            tips.append("Ritmo alto: baja a ~130–160 WPM.")
+        if total_fillers >= 5:
+            tips.append("Reduce muletillas (practica silencios breves).")
+        if pauses_per_min > 6:
+            tips.append("Demasiadas pausas: estructura mejor tus frases.")
         if not tips:
             tips = ["Buen ritmo y control de muletillas/pausas. ✅"]
         st.success(" · ".join(tips))
@@ -546,15 +627,17 @@ elif menu == "📈 Historial & Persistencia":
     if up is not None:
         new_df = pd.read_csv(up)
         for _, row in new_df.iterrows():
-            st.session_state.history.append({
-                "timestamp": str(row.get("timestamp","")),
-                "industry": str(row.get("industry","")),
-                "persona_role": str(row.get("persona_role","")),
-                "situation": str(row.get("situation","")),
-                "objection": str(row.get("objection","")),
-                "response": str(row.get("response","")),
-                "score": int(row.get("score",0))
-            })
+            st.session_state.history.append(
+                {
+                    "timestamp": str(row.get("timestamp", "")),
+                    "industry": str(row.get("industry", "")),
+                    "persona_role": str(row.get("persona_role", "")),
+                    "situation": str(row.get("situation", "")),
+                    "objection": str(row.get("objection", "")),
+                    "response": str(row.get("response", "")),
+                    "score": int(row.get("score", 0)),
+                }
+            )
         st.success("Historial cargado y fusionado ✅")
 
 elif menu == "📚 Guiones por Persona":
@@ -565,4 +648,6 @@ elif menu == "📚 Guiones por Persona":
 
 # ======= FOOTER =======
 st.markdown("---")
-st.caption("Foco: rapport, claridad, **discovery**, email. Grabación + transcripción (opcional), CSV/Sheets, audio-check.")
+st.caption(
+    "Foco: rapport, claridad, **discovery**, email. Grabación + transcripción (opcional), CSV/Sheets, audio-check."
+)
