@@ -416,3 +416,42 @@ FodyWeavers.xsd
 *.msix
 *.msm
 *.msp
+
+# Archivos de Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.pkl
+*.log
+
+# Entornos virtuales
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Configuración de editor/IDE
+.vscode/
+.idea/
+*.swp
+
+# Archivos del sistema
+.DS_Store
+Thumbs.db
+
+# Archivos temporales
+*.tmp
+*.bak
+*.old
+
+# Salidas locales
+*.csv
+*.xlsx
+*.db
+
+# Streamlit
+.streamlit/secrets.toml
